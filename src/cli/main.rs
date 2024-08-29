@@ -12,7 +12,12 @@ use move_smith::{
             compile_move_code_with_setting, generate_move_with_seed, generate_seeds,
             get_progress_bar_with_msg, raw2move, CheckReport, CheckReportError,
         },
-        Check, Command, Compile, Generate, MoveSmithEnv, Raw2move, Run,
+        Check, Command, Compile, Generate, Mode, MoveSmithEnv, Raw2move, Run,
+    },
+    config::CompilerSetting,
+    execution::{
+        transactional::{TransactionalInput, TransactionalRunner},
+        Executor,
     },
     runner::{Runner, TransactionalResult},
     utils::create_move_package,
@@ -140,20 +145,20 @@ fn handle_generate(env: &MoveSmithEnv, cmd: &Generate) {
 
     if !cmd.skip_run {
         println!("[2/2] Running transactional tests...");
-        let runner = Runner::new_with_known_errors(&env.config.fuzz, false);
+        let runner = TransactionalRunner::empty_executor();
+        let setting = env
+            .config
+            .get_compiler_setting(cmd.use_setting.as_str())
+            .unwrap();
         let pb = get_progress_bar_with_msg(cmd.num, "Running");
         let timer = Instant::now();
         let results = codes
             .par_iter()
             .map(|code| {
+                let input = TransactionalInput::new_from_str(code, &setting);
+                let result = runner.execute_one(&input);
                 pb.inc(1);
-                let results = runner.run_transactional_test(code);
-                for r in results.iter() {
-                    if !runner.error_pool.should_skip_result(r) {
-                        return true;
-                    }
-                }
-                false
+                runner.is_bug(&result)
             })
             .collect::<Vec<bool>>();
         pb.finish_and_clear();
@@ -208,8 +213,14 @@ fn handle_raw2move(env: &MoveSmithEnv, cmd: &Raw2move) {
 }
 
 fn handle_run(env: &MoveSmithEnv, cmd: &Run) {
-    let code = match fs::read_to_string(&cmd.file) {
-        Ok(s) => s.to_string(),
+    let runner = TransactionalRunner::empty_executor();
+    let setting = env
+        .config
+        .get_compiler_setting(cmd.use_setting.as_str())
+        .unwrap();
+
+    let input = match fs::read_to_string(&cmd.file) {
+        Ok(_) => TransactionalInput::new_from_file(PathBuf::from(&cmd.file), &setting),
         Err(_) => {
             println!("Converting: {:?} to Move", cmd.file);
             let bytes = fs::read(&cmd.file).unwrap();
@@ -218,31 +229,27 @@ fn handle_run(env: &MoveSmithEnv, cmd: &Run) {
                 println!("Failed to convert raw bytes to Move code:\n{}", r.log);
                 return;
             }
-            code
+            TransactionalInput::new_from_str(&code, &setting)
         },
     };
     println!("Loaded code from file: {:?}", cmd.file);
-    // let runner = Runner::new_with_known_errors(&env.config.fuzz, true);
-    let runner = Runner::new(&env.config.fuzz);
-    let results = runner.run_transactional_test(&code);
-    for r in results.iter() {
-        match r.result.is_ok() {
-            true => println!("Success -- {}", r.description),
-            false => println!("Failed -- {}", r.description),
-        }
-        if !cmd.silent {
-            println!("{}", r.get_log());
-            println!(
-                "Will be ignored: {}",
-                runner.error_pool.should_skip_result(r)
-            );
-        }
-        println!(
-            "Finished running transactional test in: {}ms",
-            r.duration.as_millis()
-        );
+    let result = runner.execute_one(&input);
+    match cmd.output {
+        Mode::Raw => {
+            println!("{}", result.log);
+            println!("{:?}", result.status);
+            println!("Duration: {:?}", result.duration);
+        },
+        Mode::Canonicalized => {
+            println!("{}", result);
+        },
+        Mode::None => (),
     }
-    println!("Done!")
+    // println!(
+    //     "Will be ignored: {}",
+    //     runner.error_pool.should_skip_result(r)
+    // );
+    println!("Done!");
 }
 
 fn handle_compile(env: &MoveSmithEnv, cmd: &Compile) {

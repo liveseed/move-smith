@@ -1,7 +1,7 @@
 pub mod common;
 
 use crate::config::Config;
-use clap::{ArgGroup, Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -42,9 +42,18 @@ pub enum Command {
 pub struct Run {
     #[arg(value_name = "FILE")]
     pub file: String,
-    /// Show the log of the execution regardless of result
-    #[arg(short, long)]
-    pub silent: bool,
+    /// Format to show the output
+    #[arg(value_name = "MODE", short, long, default_value = "canonicalized")]
+    pub output: Mode,
+    #[arg(long, default_value = "opt")]
+    pub use_setting: String,
+}
+
+#[derive(ValueEnum, Debug, Clone)]
+pub enum Mode {
+    None,
+    Canonicalized,
+    Raw,
 }
 
 #[derive(Args, Debug)]
